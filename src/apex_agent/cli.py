@@ -1,14 +1,16 @@
-"""Command Line Interface for Apex Agent using Typer and Rich."""
+"""Command Line Interface for Apex Agent with Interactive Chat & Session Memory."""
 
 import os
 from pathlib import Path
+from typing import Optional
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from apex_agent.agent.conversation_loop import ConversationalAgent
 from apex_agent.agent.runtime import MemoryAgentRuntime
-from apex_agent.agent.tools import MemoryAgentTools
+from apex_agent.agent.session_db import SessionDB
 from apex_agent.autonomous.scheduler import AutonomousMemoryDaemon
 from apex_agent.intelligence.conflicts import ConflictDetector
 from apex_agent.intelligence.entities import EntityGraphEngine
@@ -23,6 +25,94 @@ app = typer.Typer(
 console = Console()
 
 
+@app.command("chat")
+def chat(
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Resume an existing session ID"),
+):
+    """Starts an interactive conversational session with background tools and session persistence."""
+    agent = ConversationalAgent(session_id=session)
+    sess_id = agent.session_id
+
+    console.print(
+        Panel(
+            f"[bold cyan]Apex Conversational Agent[/bold cyan] (Session: [bold yellow]{sess_id}[/bold yellow])\n"
+            "Talk normally. The agent uses background memory search, knowledge graphs, and action tools.\n"
+            "Type [bold red]/exit[/bold red] or [bold red]/quit[/bold red] to end session.",
+            title="Apex Interactive Console",
+            border_style="cyan",
+        )
+    )
+
+    def tool_callback(name: str, args: dict):
+        console.print(f"  [dim cyan]⚡ Tool call:[/dim cyan] [bold]{name}[/bold]({args})")
+
+    while True:
+        try:
+            user_msg = console.input("\n[bold green]You[/bold green] > ").strip()
+            if not user_msg:
+                continue
+            if user_msg.lower() in ("/exit", "/quit", "exit", "quit"):
+                console.print(f"[yellow]Session {sess_id} saved. Goodbye![/yellow]")
+                break
+
+            with console.status("[bold cyan]Agent reasoning & acting...[/bold cyan]"):
+                reply = agent.interact(user_msg, on_tool_call=tool_callback)
+
+            console.print(f"\n[bold cyan]Apex[/bold cyan] > {reply}")
+        except (KeyboardInterrupt, EOFError):
+            console.print(f"\n[yellow]Session {sess_id} saved.[/yellow]")
+            break
+
+
+@app.command("sessions")
+def sessions(
+    limit: int = typer.Option(15, "--limit", "-l", help="Number of recent sessions to show"),
+):
+    """Lists all saved conversational sessions from SQLite."""
+    sdb = SessionDB()
+    sess_list = sdb.list_sessions(limit=limit)
+
+    if not sess_list:
+        console.print("[yellow]No conversational sessions recorded yet.[/yellow]")
+        return
+
+    table = Table(title="Saved Chat Sessions (SQLite state.db)", show_header=True, header_style="bold magenta")
+    table.add_column("Session ID", style="cyan", width=18)
+    table.add_column("Title", style="white")
+    table.add_column("Messages", justify="right", width=10)
+    table.add_column("Updated At", style="dim", width=22)
+
+    for s in sess_list:
+        table.add_row(
+            s["id"],
+            s["title"],
+            str(s["message_count"]),
+            s["updated_at"][:19].replace("T", " "),
+        )
+
+    console.print(table)
+
+
+@app.command("run-goal")
+def run_goal(
+    goal: str = typer.Argument(..., help="Autonomous goal for the agent to achieve using tools"),
+):
+    """Runs an autonomous goal where the agent reasons, checks memory, and takes real actions."""
+    agent = ConversationalAgent()
+    console.print(Panel(f"[bold]Executing Autonomous Goal:[/bold] {goal}", title="Autonomous Execution", border_style="green"))
+
+    def tool_callback(name: str, args: dict):
+        console.print(f"  [bold yellow]✔ Action Executed:[/bold yellow] [bold]{name}[/bold] -> {args}")
+
+    with console.status("[bold cyan]Agent pursuing goal autonomously...[/bold cyan]"):
+        result = agent.interact(
+            f"Autonomous Goal: {goal}\nInspect memory, find necessary facts, take required actions (like drafting emails or updating pipeline), and report what you accomplished.",
+            on_tool_call=tool_callback
+        )
+
+    console.print(Panel(result, title="Goal Outcome Report", border_style="cyan"))
+
+
 @app.command("ingest")
 def ingest(
     path: str = typer.Argument(..., help="Path to file or directory to ingest into memory"),
@@ -34,7 +124,6 @@ def ingest(
         raise typer.Exit(1)
 
     pipeline = IngestionPipeline()
-    graph = EntityGraphEngine()
 
     files_to_process = []
     if target.is_dir():
@@ -47,7 +136,7 @@ def ingest(
         console.print(f"[yellow]No supported files found in {target}[/yellow]")
         return
 
-    with console.status("[bold cyan]Ingesting documents & extracting entities...[/bold cyan]"):
+    with console.status("[bold cyan]Ingesting documents & building knowledge graph...[/bold cyan]"):
         total_events = 0
         for f in files_to_process:
             try:
@@ -151,8 +240,6 @@ def entities(
                 r["source_ref"][:25],
             )
         console.print(table)
-    else:
-        console.print("[dim]No direct relationship links recorded yet.[/dim]")
 
 
 @app.command("conflicts")
