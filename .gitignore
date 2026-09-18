@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv/
+venv/
+data/apex_index.db
+data/memory/
+*.log
+.DS_Store
