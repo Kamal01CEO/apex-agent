@@ -305,3 +305,10 @@ def whatsapp():
     import subprocess
     js_runner = Path(__file__).resolve().parent.parent.parent / "integrations" / "whatsapp_runner.js"
     subprocess.run(["node", str(js_runner)])
+
+@app.command("auth-email")
+def auth_email():
+    """Launches Google OAuth in your default browser to authenticate your Gmail account."""
+    import subprocess
+    auth_script = Path(__file__).resolve().parent.parent.parent / "integrations" / "gmail_auth.js"
+    subprocess.run(["node", str(auth_script)])
