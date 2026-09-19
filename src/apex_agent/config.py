@@ -26,3 +26,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "sk-xIcYYd6ymiCEe0L0XLC9Tpl
 # Telegram Notifications
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8725855304:AAGp1RTU-62RfVwvcUX82EzpYtCSJlqeBjE")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5590614649")
+
+# Live Gmail Credentials
+GMAIL_USER = os.getenv("GMAIL_USER", "rajdeep152123@gmail.com")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "qkicsewmzvewggws")

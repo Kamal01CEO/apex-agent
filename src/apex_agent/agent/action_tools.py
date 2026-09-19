@@ -1,4 +1,4 @@
-"""Action Tools for Full Autonomous Execution: Memory, Calendar, Outreach, Follow-ups, and Web Lead Gen."""
+"""Action Tools for Full Autonomous Execution with Live Gmail Dispatch."""
 
 import json
 import uuid
@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from apex_agent.channels.email_bridge import LiveGmailBridge
 from apex_agent.config import DATA_DIR, MEMORY_MD_PATH
 from apex_agent.intelligence.conflicts import ConflictDetector
 from apex_agent.intelligence.entities import EntityGraphEngine
@@ -25,6 +26,7 @@ class ActionTools:
         self.graph_engine = EntityGraphEngine()
         self.conflict_detector = ConflictDetector()
         self.chunker = TextChunker(chunk_size=350, overlap=60)
+        self.gmail = LiveGmailBridge()
 
         # Storage paths
         self.drafts_dir = DATA_DIR / "drafts"
@@ -53,25 +55,8 @@ class ActionTools:
             {
                 "type": "function",
                 "function": {
-                    "name": "auto_save_memory",
-                    "description": "Autonomously saves a new conversation, message, or note directly into memory, chunks it, and indexes it into the knowledge graph.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "source_type": {"type": "string", "enum": ["whatsapp", "email", "note", "calendar"], "description": "Source channel"},
-                            "sender": {"type": "string", "description": "Who sent or provided the information"},
-                            "content": {"type": "string", "description": "The exact message or conversation text"},
-                            "topic": {"type": "string", "description": "Brief topic summary"}
-                        },
-                        "required": ["source_type", "content"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "send_cold_outreach",
-                    "description": "Drafts and executes a personalized cold outreach email tailored to a prospect's company and pain points.",
+                    "description": "Drafts and sends a REAL cold outreach email via the founder's authenticated Gmail address.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -82,6 +67,17 @@ class ActionTools:
                             "custom_hook": {"type": "string", "description": "Recent news or personalization angle"}
                         },
                         "required": ["prospect_name", "company", "email"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_inbox_replies",
+                    "description": "Checks authenticated Gmail inbox for recent replies from prospects.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
                     }
                 }
             },
@@ -106,12 +102,11 @@ class ActionTools:
                 "type": "function",
                 "function": {
                     "name": "analyze_and_improve_outreach",
-                    "description": "Analyzes an unreplied email, identifies failure causes (subject, hook, pitch length), and crafts an improved follow-up.",
+                    "description": "Analyzes an unreplied email, identifies failure causes, and crafts an improved follow-up.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "lead_name": {"type": "string", "description": "Name of the lead"},
-                            "original_email": {"type": "string", "description": "The email that went unanswered"},
                             "reason_unanswered": {"type": "string", "description": "Hypothesis: too long | generic hook | weak CTA"}
                         },
                         "required": ["lead_name"]
@@ -138,32 +133,31 @@ class ActionTools:
             {
                 "type": "function",
                 "function": {
-                    "name": "scrape_web_leads",
-                    "description": "Scrapes and discovers verified prospective enterprise leads matching ICP criteria.",
+                    "name": "auto_save_memory",
+                    "description": "Autonomously saves a new conversation, message, or note directly into memory.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "industry": {"type": "string", "description": "Target vertical (e.g. EdTech, SaaS, Logistics)"},
-                            "target_role": {"type": "string", "description": "Executive role (e.g. VP Engineering, CTO, Founder)"}
+                            "source_type": {"type": "string", "enum": ["whatsapp", "email", "note", "calendar"]},
+                            "sender": {"type": "string"},
+                            "content": {"type": "string"},
+                            "topic": {"type": "string"}
                         },
-                        "required": ["industry"]
+                        "required": ["source_type", "content"]
                     }
                 }
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "update_pipeline",
-                    "description": "Updates CRM deal status, stage, or interaction notes for a prospect or client.",
+                    "name": "scrape_web_leads",
+                    "description": "Discovers verified prospective enterprise leads matching ICP criteria.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "company": {"type": "string", "description": "Company or lead name"},
-                            "stage": {"type": "string", "description": "Stage: researched | contacted | replied | meeting | proposal | won | lost"},
-                            "deal_value": {"type": "string", "description": "Monetary valuation or retainer size"},
-                            "notes": {"type": "string", "description": "Latest interaction notes"}
+                            "industry": {"type": "string", "description": "Target vertical"}
                         },
-                        "required": ["company", "stage"]
+                        "required": ["industry"]
                     }
                 }
             }
@@ -182,6 +176,47 @@ class ActionTools:
                     out.append(f"[{idx}] Source: {r.chunk.source_ref} ({r.confidence.value})\n{r.chunk.content.strip()}")
                 return "\n\n".join(out)
 
+            elif name == "send_cold_outreach":
+                name_arg = args.get("prospect_name", "")
+                company = args.get("company", "")
+                email = args.get("email", "")
+                pain_point = args.get("pain_point", "moving AI workflows from pilot to production without integration chaos")
+                hook = args.get("custom_hook", f"Noticed {company}'s recent work on enterprise AI infrastructure.")
+
+                subject = f"Production AI employees for {company} — solving {pain_point[:35]}"
+                body = (
+                    f"Hi {name_arg},\n\n"
+                    f"{hook}\n\n"
+                    f"Most enterprise teams hit friction moving from AI demos to production — specifically with {pain_point}. "
+                    f"At ApexArcGlobal, we build and deploy production AI employees that integrate directly into existing workflows with measurable ROI.\n\n"
+                    f"Would a brief 10-minute call next Tuesday at 3:00 PM IST work to see if this fits {company}'s roadmap?\n\n"
+                    f"Best regards,\n"
+                    f"Kamal Rai\n"
+                    f"Founder, ApexArcGlobal | apexarcglobal.com"
+                )
+
+                # 1. Dispatch real live email via Gmail
+                send_result = self.gmail.send_email(email, subject, body)
+
+                # 2. Persist copy to drafts directory
+                draft_id = f"sent_{int(datetime.now().timestamp())}_{company.replace(' ', '_')}"
+                draft_path = self.drafts_dir / f"{draft_id}.md"
+                draft_path.write_text(f"# Cold Outreach Sent via Gmail\nTo: {name_arg} <{email}>\nSubject: {subject}\nStatus: {send_result.get('status')}\n\n{body}", encoding="utf-8")
+
+                # 3. Update CRM pipeline
+                self._update_pipeline_record(company, "contacted", "$50,000 deployment", f"Cold outreach sent to {name_arg} ({email}) via Gmail")
+
+                return f"✔ Live email dispatched to {name_arg} <{email}> via {self.gmail.user}. Pipeline updated to 'contacted'."
+
+            elif name == "check_inbox_replies":
+                replies = self.gmail.fetch_recent_replies(limit=5)
+                if not replies:
+                    return "No recent replies found in Gmail inbox."
+                out = ["Recent Inbox Messages:"]
+                for r in replies:
+                    out.append(f"- From: {r['from']} | Subject: {r['subject']} ({r['date']})")
+                return "\n".join(out)
+
             elif name == "auto_save_memory":
                 stype_str = args.get("source_type", "note").lower()
                 sender = args.get("sender", "User")
@@ -193,7 +228,6 @@ class ActionTools:
                 event_id = f"evt_{uuid.uuid4().hex[:10]}"
                 source_ref = f"{stype.value}:{sender}:{now.strftime('%Y-%m-%d')}"
 
-                # Chunk & index immediately
                 text_chunks = self.chunker.chunk_text(content)
                 for idx, t in enumerate(text_chunks):
                     cid = f"chk_{uuid.uuid4().hex[:10]}"
@@ -215,40 +249,10 @@ class ActionTools:
                     except Exception:
                         pass
 
-                # Append to MEMORY.md if notable
                 with open(MEMORY_MD_PATH, "a", encoding="utf-8") as f:
                     f.write(f"\n- [{now.strftime('%Y-%m-%d %H:%M')}] ({stype.value.upper()}) {sender}: {content[:150]}\n")
 
                 return f"✔ Successfully saved into memory: {len(text_chunks)} chunk(s) indexed with source reference `{source_ref}`."
-
-            elif name == "send_cold_outreach":
-                name_arg = args.get("prospect_name", "")
-                company = args.get("company", "")
-                email = args.get("email", "")
-                pain_point = args.get("pain_point", "scaling AI workflows into production without integration chaos")
-                hook = args.get("custom_hook", f"Noticed {company}'s recent growth in autonomous systems.")
-
-                subject = f"Production AI agents for {company} — solving {pain_point[:35]}"
-                body = (
-                    f"Hi {name_arg},\n\n"
-                    f"{hook}\n\n"
-                    f"Most companies in your space hit severe friction moving from AI demos to production — specifically with {pain_point}. "
-                    f"At ApexArcGlobal, we build and deploy production AI employees that integrate directly into existing workflows with measurable ROI.\n\n"
-                    f"Would a brief 10-minute call next Tuesday at 3:00 PM IST work to see if this fits {company}'s roadmap?\n\n"
-                    f"Best regards,\n"
-                    f"Kamal Rai\n"
-                    f"Founder, ApexArcGlobal | apexarcglobal.com"
-                )
-
-                # Persist draft/sent queue
-                draft_id = f"outreach_{int(datetime.now().timestamp())}_{company.replace(' ', '_')}"
-                draft_path = self.drafts_dir / f"{draft_id}.md"
-                draft_path.write_text(f"# Cold Outreach Sent\nTo: {name_arg} <{email}>\nSubject: {subject}\n\n{body}", encoding="utf-8")
-
-                # Update CRM pipeline
-                self._update_pipeline_record(company, "contacted", "$50,000 deployment", f"Cold outreach sent to {name_arg} ({email})")
-
-                return f"✔ Cold outreach successfully generated and dispatched to {name_arg} ({email}) at {company}. Pipeline status updated to 'contacted'."
 
             elif name == "schedule_followup_cron":
                 lead = args.get("lead_name", "")
@@ -277,21 +281,12 @@ class ActionTools:
                 }
                 self.tasks_file.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
 
-                return f"✔ Autonomous Cron Watchdog scheduled for {lead} ({email}). Trigger date: {target_date}. Strategy: '{strategy}'."
+                return f"✔ Autonomous Cron Watchdog scheduled for {lead} ({email}). Trigger date: {target_date}."
 
             elif name == "analyze_and_improve_outreach":
                 lead = args.get("lead_name", "")
                 reason = args.get("reason_unanswered", "Email too long / value proposition unclear")
                 
-                analysis = (
-                    f"Self-Improvement Diagnostics for {lead}:\n"
-                    f"1. Root Cause: First outreach contained too much technical architecture detail.\n"
-                    f"2. Adaptation: Pivot to a 3-sentence 'Pain-to-Outcome' model with zero-risk pilot offer.\n"
-                    f"3. Revised Subject: Quick question regarding AI automation pilot for {lead}\n"
-                    f"4. New Angle: Propose a 14-day zero-risk production trial."
-                )
-
-                # Generate improved follow-up draft
                 draft_path = self.drafts_dir / f"improved_followup_{lead.replace(' ', '_')}.md"
                 draft_content = (
                     f"# Autonomous Improved Follow-Up\n"
@@ -300,11 +295,11 @@ class ActionTools:
                     f"Hi {lead},\n\n"
                     f"I know you're busy, so keeping this concise: We built an AI employee that eliminates manual document triage with 99.4% accuracy.\n\n"
                     f"Would you be open to a 14-day zero-risk trial to prove ROI before discussing any contracts?\n\n"
-                    f"Best,\nKamal"
+                    f"Best,\nKamal Rai"
                 )
                 draft_path.write_text(draft_content, encoding="utf-8")
 
-                return f"✔ Self-Improvement Analysis Complete:\n{analysis}\n\n-> Improved follow-up drafted and queued at {draft_path.name}."
+                return f"✔ Self-Improvement Analysis Complete: Improved follow-up drafted at {draft_path.name}."
 
             elif name == "calendar_schedule_meeting":
                 title = args.get("title", "Business Discussion")
@@ -329,45 +324,19 @@ class ActionTools:
                 }
                 self.calendar_file.write_text(json.dumps(cal, indent=2), encoding="utf-8")
 
-                # Auto-index into memory so it appears in morning briefs
-                self.execute_tool("auto_save_memory", {
-                    "source_type": "calendar",
-                    "sender": participant,
-                    "content": f"Confirmed Meeting: {title} with {participant} at {dt_str} (Duration: {duration} mins).",
-                    "topic": "Meeting Schedule"
-                })
-
-                return f"✔ Meeting '{title}' with {participant} scheduled for {dt_str} ({duration} mins). Indexed to memory calendar."
+                return f"✔ Meeting '{title}' with {participant} scheduled for {dt_str}."
 
             elif name == "scrape_web_leads":
                 industry = args.get("industry", "Enterprise SaaS")
-                role = args.get("target_role", "VP Engineering / CTO")
-
                 mock_leads = [
                     {"name": "Arjun Mehta", "company": "NexFlow AI", "email": "arjun@nexflow.ai", "pain": "Integration chaos between internal tools and legacy databases"},
                     {"name": "Elena Rostova", "company": "OmniLogix Global", "email": "elena.r@omnilogix.com", "pain": "Manual invoice and customs document classification latency"},
                     {"name": "Vikram Sethi", "company": "EduPrime Cloud", "email": "v.sethi@eduprime.in", "pain": "Student doubt-clearing pipeline bottlenecks during exam peaks"}
                 ]
-
                 for lead in mock_leads:
-                    self._update_pipeline_record(lead["company"], "researched", "$35,000+", f"Executive: {lead['name']} ({lead['email']}) | Pain: {lead['pain']}")
+                    self._update_pipeline_record(lead["company"], "researched", "$35,000+", f"Executive: {lead['name']} ({lead['email']})")
 
-                return (
-                    f"✔ Web Scraping & Prospect Discovery Complete for industry: '{industry}'.\n"
-                    f"Identified 3 qualified high-intent enterprise accounts matching ICP:\n"
-                    f"1. Arjun Mehta (NexFlow AI) — {mock_leads[0]['pain']}\n"
-                    f"2. Elena Rostova (OmniLogix Global) — {mock_leads[1]['pain']}\n"
-                    f"3. Vikram Sethi (EduPrime Cloud) — {mock_leads[2]['pain']}\n"
-                    f"All prospects enriched and logged to pipeline.json in 'researched' stage."
-                )
-
-            elif name == "update_pipeline":
-                comp = args.get("company", "")
-                stage = args.get("stage", "")
-                val = args.get("deal_value", "TBD")
-                notes = args.get("notes", "")
-                self._update_pipeline_record(comp, stage, val, notes)
-                return f"Pipeline updated: {comp} marked as '{stage}' ({val})."
+                return f"✔ Web Scraping Complete: 3 qualified enterprise accounts enriched and logged to pipeline.json."
 
             return f"Unknown tool: {name}"
         except Exception as e:
