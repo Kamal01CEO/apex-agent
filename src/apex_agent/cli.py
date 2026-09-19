@@ -291,3 +291,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+@app.command("telegram")
+def telegram():
+    """Starts the interactive Telegram Bot bridge to chat with Apex Agent via Telegram."""
+    from apex_agent.channels.telegram_bridge import TelegramApexBridge
+    bridge = TelegramApexBridge()
+    bridge.run_polling()
+
+@app.command("whatsapp")
+def whatsapp():
+    """Starts live WhatsApp connector (Baileys) to auto-sync messages into Apex Agent memory."""
+    import subprocess
+    js_runner = Path(__file__).resolve().parent.parent.parent / "integrations" / "whatsapp_runner.js"
+    subprocess.run(["node", str(js_runner)])
