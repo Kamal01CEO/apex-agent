@@ -1,4 +1,4 @@
-"""Conversational Multi-Turn Agent Loop for Apex Agent with Autonomous Tool Actions."""
+"""Conversational Multi-Turn Agent Loop with True LLM Intent & Autonomous Tool Execution."""
 
 import json
 import logging
@@ -17,7 +17,7 @@ logger = logging.getLogger("apex_agent.conversation")
 
 
 class ConversationalAgent:
-    """Apex Agent: Autonomous Chief of Staff executing real actions on demand."""
+    """Apex Agent: Autonomous Chief of Staff executing real actions via LLM intent reasoning."""
 
     def __init__(self, session_id: Optional[str] = None):
         self.session_db = SessionDB()
@@ -33,120 +33,124 @@ class ConversationalAgent:
             durable_facts = MEMORY_MD_PATH.read_text(encoding="utf-8")[:1500]
 
         return f"""
-You are APEX AGENT — an autonomous personal memory assistant and chief of staff for Kamal (founder of ApexArcGlobal).
-Speak directly, concisely, and factually. No corporate fluff.
+You are APEX AGENT — an autonomous personal memory operating system and Chief of Staff for Kamal (Founder of ApexArcGlobal).
+You are direct, sharp, and proactive. No robotic filler.
 
-## Operating Principles
-- Never invent facts. Base statements strictly on verified recalled memory data.
-- Always cite your sources with `[Source: type:ref:timestamp]` syntax.
-- When an action is requested (send cold outreach, save memory, schedule meeting, improve email, set follow-up cron), confirm the action taken and present the outcome clearly.
+## Core Directives
+1. Never invent facts. Base statements strictly on recalled memory data or live tool outputs.
+2. When answering, state clearly what actions were taken (e.g. meetings cancelled, emails checked, memory saved).
+3. If checking emails, summarize the real sender and subject line.
+4. If cancelling meetings, confirm the calendar is cleared.
 
 ## Apex Agent's Own Durable Memory
 {durable_facts}
 """
 
+    def _decide_tool_calls_via_llm(self, user_msg: str) -> List[Dict[str, Any]]:
+        """Uses the LLM to determine exact tool calls from the user's intent."""
+        decision_prompt = f"""
+Given the user request below, select the appropriate tools to call.
+Available Tools:
+- check_inbox_replies(limit: int) -> checks Gmail inbox for recent emails
+- calendar_cancel_meetings(participant: str) -> cancels/clears meetings from calendar ('all' to cancel all)
+- calendar_list_meetings() -> lists current scheduled meetings
+- calendar_schedule_meeting(title, participant, date_time, duration_minutes) -> schedules a new meeting
+- memory_search(query: str) -> searches past personal memory (WhatsApp, notes, emails)
+- send_cold_outreach(prospect_name, company, email, pain_point) -> sends real cold outreach email
+- schedule_followup_cron(lead_name, email, days_delay) -> sets cron watchdog
+- analyze_and_improve_outreach(lead_name) -> analyzes unreplied email and drafts improved version
+- auto_save_memory(source_type, content, sender) -> saves new interaction into memory
+- scrape_web_leads(industry: str) -> discovers new enterprise leads
+
+User Request: "{user_msg}"
+
+Output a STRICT JSON array of objects with "tool" and "args". If no tools are needed, output [].
+Example:
+[{{"tool": "calendar_cancel_meetings", "args": {{"participant": "all"}}}}, {{"tool": "check_inbox_replies", "args": {{"limit": 5}}}}]
+
+Output JSON only:
+"""
+        messages = [
+            {"role": "system", "content": "You are a precise tool router. Return strictly valid JSON array."},
+            {"role": "user", "content": decision_prompt}
+        ]
+
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=400,
+                timeout=15,
+            )
+            raw = resp.choices[0].message.content.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            calls = json.loads(raw)
+            if isinstance(calls, list):
+                return calls
+        except Exception:
+            pass
+
+        # Smart rule-based fallback if LLM formatting fails
+        calls = []
+        low = user_msg.lower()
+        if "cancel" in low and ("meeting" in low or "call" in low or "calendar" in low):
+            calls.append({"tool": "calendar_cancel_meetings", "args": {"participant": "all"}})
+        elif "schedule" in low and ("meeting" in low or "call" in low):
+            calls.append({"tool": "calendar_schedule_meeting", "args": {"title": "Strategic Call", "participant": "Client Partner", "date_time": "2026-09-23 15:00 IST"}})
+
+        if any(w in low for w in ("inbox", "mail", "email", "reply", "replies")) and any(w in low for w in ("check", "read", "important", "new", "any")):
+            calls.append({"tool": "check_inbox_replies", "args": {"limit": 5}})
+        elif any(w in low for w in ("outreach", "pitch")) or ("send" in low and "email" in low):
+            calls.append({"tool": "send_cold_outreach", "args": {"prospect_name": "Ali Ghodsi", "company": "Databricks", "email": "ali@databricks.com"}})
+
+        if "scrape" in low or "find leads" in low:
+            calls.append({"tool": "scrape_web_leads", "args": {"industry": "Enterprise SaaS"}})
+
+        if "save" in low and ("whatsapp" in low or "conversation" in low or "remember" in low):
+            calls.append({"tool": "auto_save_memory", "args": {"source_type": "whatsapp", "content": user_msg}})
+
+        if not calls and len(user_msg.split()) > 2:
+            calls.append({"tool": "memory_search", "args": {"query": user_msg}})
+
+        return calls
+
     def interact(self, user_input: str, on_tool_call: Optional[Callable[[str, dict], None]] = None) -> str:
-        """Processes one conversational turn with autonomous tool routing and memory synthesis."""
+        """Processes one conversational turn by determining tools, executing them, and synthesizing response."""
         self.session_db.add_message(self.session_id, role="user", content=user_input)
-        low = user_input.lower()
-        actions_taken = []
 
-        # 1. Lead Generation / Scraping Tool
-        if any(w in low for w in ("scrape", "find leads", "prospect discovery", "make client list")):
-            ind = "Enterprise SaaS & AI Infrastructure"
-            if "logistics" in low: ind = "Logistics"
-            elif "edtech" in low: ind = "EdTech"
-            if on_tool_call: on_tool_call("scrape_web_leads", {"industry": ind})
-            res = self.tools.execute_tool("scrape_web_leads", {"industry": ind})
-            actions_taken.append(res)
+        # 1. Determine tool calls
+        tool_calls = self._decide_tool_calls_via_llm(user_input)
+        tool_observations = []
 
-        # 2. Cold Outreach Sending Tool
-        if any(w in low for w in ("cold outreach", "send email to", "outreach mail", "pitch")):
-            target_name = "Alexandr Wang" if "alex" in low else "Ali Ghodsi" if "ali" in low else "Arjun Mehta"
-            company = "Scale AI" if "alex" in low else "Databricks" if "ali" in low else "NexFlow AI"
-            email = "alex@scale.com" if "alex" in low else "ali@databricks.com" if "ali" in low else "arjun@nexflow.ai"
-            pain = "production AI employee integration and workflow reliability"
-            if on_tool_call: on_tool_call("send_cold_outreach", {"prospect_name": target_name, "company": company, "email": email})
-            res = self.tools.execute_tool("send_cold_outreach", {
-                "prospect_name": target_name,
-                "company": company,
-                "email": email,
-                "pain_point": pain,
-                "custom_hook": f"Following up on {company}'s enterprise AI scaling benchmarks."
-            })
-            actions_taken.append(res)
+        # 2. Execute each tool
+        for tc in tool_calls:
+            tname = tc.get("tool")
+            targs = tc.get("args", {})
+            if on_tool_call:
+                on_tool_call(tname, targs)
+            obs = self.tools.execute_tool(tname, targs)
+            tool_observations.append(f"Tool `{tname}` output:\n{obs}")
 
-        # 3. Autonomous Memory Save (WhatsApp or user notes)
-        if any(w in low for w in ("save", "remember this", "whatsapp conversation", "store this")):
-            sender = "Rahul Sequoia" if "rahul" in low else "Sarah" if "sarah" in low else "Founder Partner"
-            stype = "whatsapp" if "whatsapp" in low else "note"
-            if on_tool_call: on_tool_call("auto_save_memory", {"source_type": stype, "sender": sender})
-            res = self.tools.execute_tool("auto_save_memory", {
-                "source_type": stype,
-                "sender": sender,
-                "content": user_input,
-                "topic": "Real-time Captured Interaction"
-            })
-            actions_taken.append(res)
+        # 3. Synthesize natural grounded response
+        obs_text = "\n\n".join(tool_observations) if tool_observations else "No external actions required."
 
-        # 4. Schedule Follow-up Cron Watchdog
-        if any(w in low for w in ("cron", "follow up", "check if mail reply", "unanswered")):
-            lead = "Ali Ghodsi" if "ali" in low else "Arjun Mehta"
-            email = "ali@databricks.com" if "ali" in low else "arjun@nexflow.ai"
-            if on_tool_call: on_tool_call("schedule_followup_cron", {"lead_name": lead, "email": email})
-            res = self.tools.execute_tool("schedule_followup_cron", {
-                "lead_name": lead,
-                "email": email,
-                "days_delay": 2,
-                "strategy": "Automated reply-check watchdog + objection addressing"
-            })
-            actions_taken.append(res)
+        synthesis_prompt = f"""
+User Query: "{user_input}"
 
-        # 5. Self-Improvement Engine (Diagnose & Improve unreplied emails)
-        if any(w in low for w in ("improve", "why didn't", "no reply", "improve mail")):
-            lead = "Ali Ghodsi" if "ali" in low else "Alexandr Wang"
-            if on_tool_call: on_tool_call("analyze_and_improve_outreach", {"lead_name": lead})
-            res = self.tools.execute_tool("analyze_and_improve_outreach", {
-                "lead_name": lead,
-                "reason_unanswered": "First pitch was too long with no immediate risk-free trial offer"
-            })
-            actions_taken.append(res)
+Tools Executed and Live Outputs:
+{obs_text}
 
-        # 6. Meeting Scheduling & Calendar
-        if any(w in low for w in ("schedule", "calendar", "meeting", "google meet")):
-            participant = "Rahul Sequoia" if "rahul" in low else "Sarah Jenkins" if "sarah" in low else "Client Partner"
-            dt_str = "2026-09-23 15:00 IST"
-            if on_tool_call: on_tool_call("calendar_schedule_meeting", {"participant": participant, "date_time": dt_str})
-            res = self.tools.execute_tool("calendar_schedule_meeting", {
-                "title": f"Strategic Partnership Call with {participant}",
-                "participant": participant,
-                "date_time": dt_str,
-                "duration_minutes": 30
-            })
-            actions_taken.append(res)
-
-        # 7. Memory Search
-        memory_context = ""
-        results = self.tools.search_engine.search(user_input, limit=4)
-        if results and results[0].relevance_score > 0.15:
-            if on_tool_call: on_tool_call("memory_search", {"query": user_input})
-            memory_context = "\n".join([
-                f"[Source: {r.chunk.source_ref} ({r.confidence.value}) | {r.chunk.timestamp.strftime('%Y-%m-%d')}]:\n{r.chunk.content.strip()}"
-                for r in results
-            ])
-
-        # 8. Formulate Response
-        prompt = f"User Request: {user_input}\n"
-        if memory_context:
-            prompt += f"\n<recalled-memory-data>\n{memory_context}\n</recalled-memory-data>\n"
-        if actions_taken:
-            prompt += f"\n<actions-executed-autonomously>\n" + "\n".join(actions_taken) + "\n</actions-executed-by-apex>\n"
-
-        prompt += "\nRespond as Apex Agent directly to Kamal. Summarize the actions executed cleanly and provide exact next steps."
-
+Instructions:
+1. Answer the user directly and concisely as Apex Agent (Chief of Staff).
+2. Confirm the exact actions completed (e.g. meetings cancelled).
+3. If inbox was checked, report the emails found cleanly.
+4. Do not recite raw JSON. Speak professionally and crisply.
+"""
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": synthesis_prompt}
         ]
 
         try:
@@ -154,19 +158,18 @@ Speak directly, concisely, and factually. No corporate fluff.
                 model=self.model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=800,
+                max_tokens=700,
                 timeout=25,
             )
             reply = resp.choices[0].message.content or ""
         except Exception:
-            action_summary = "\n".join(actions_taken) if actions_taken else "Actions evaluated."
-            reply = f"**Apex Agent Action Report:**\n\n{action_summary}\n\n*Recalled Memory Context:*\n{memory_context[:300]}"
+            reply = f"Apex Agent Action Summary:\n\n{obs_text}"
 
         self.session_db.add_message(
             self.session_id,
             role="assistant",
             content=reply,
-            tool_calls=[{"actions": actions_taken}] if actions_taken else None,
+            tool_calls=tool_calls if tool_calls else None
         )
 
         return reply
