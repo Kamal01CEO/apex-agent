@@ -1,0 +1,11 @@
+{
+  "cron_followup_1789797424": {
+    "type": "email_followup_watchdog",
+    "lead": "Ali Ghodsi",
+    "email": "ali@databricks.com",
+    "trigger_date": "2026-09-21",
+    "strategy": "Automated reply-check watchdog + objection addressing",
+    "status": "active_monitoring",
+    "created_at": "2026-09-19T11:27:04.549596"
+  }
+}

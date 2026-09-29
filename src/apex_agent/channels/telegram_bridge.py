@@ -18,12 +18,12 @@ class TelegramApexBridge:
     """Long-polling Telegram Bot daemon running Apex Agent."""
 
     def __init__(self, token: Optional[str] = None, allowed_user: Optional[str] = None):
-        self.token = token or TELEGRAM_BOT_TOKEN or "8725855304:AAGp1RTU-62RfVwvcUX82EzpYtCSJlqeBjE"
-        self.allowed_user = str(allowed_user or TELEGRAM_CHAT_ID or "5590614649")
+        self.token = token or TELEGRAM_BOT_TOKEN or "8548511786:AAGw_a9072ph4mpLJEIemuuBQgfJ9MffEk8"
+        self.allowed_user = str(allowed_user or TELEGRAM_CHAT_ID or "6250898567")
         self.base_url = f"https://api.telegram.org/bot{self.token}"
-        self.sessions = {}  # chat_id -> ConversationalAgent
+        self.sessions = {}
 
-    def send_text(self, chat_id: str, text: str):
+    def send_text(self, chat_id: str, text: str) -> bool:
         url = f"{self.base_url}/sendMessage"
         payload = {
             "chat_id": chat_id,
@@ -32,14 +32,15 @@ class TelegramApexBridge:
             "disable_web_page_preview": True,
         }
         try:
-            with httpx.Client(timeout=10) as client:
+            with httpx.Client(timeout=15) as client:
                 res = client.post(url, json=payload)
                 if res.status_code != 200:
-                    # Fallback plain text if markdown formatting errors
                     payload.pop("parse_mode", None)
-                    client.post(url, json=payload)
+                    res = client.post(url, json=payload)
+                return res.status_code == 200
         except Exception as e:
             logger.error("Error sending telegram message: %s", e)
+            return False
 
     def run_polling(self):
         """Polls Telegram for incoming messages and routes to Apex Agent."""
@@ -74,13 +75,13 @@ class TelegramApexBridge:
                             })
                             continue
 
-                        # Initialize or get session for this chat
+                        # Initialize session
                         if chat_id not in self.sessions:
                             self.sessions[chat_id] = ConversationalAgent()
 
                         agent = self.sessions[chat_id]
 
-                        # Send typing indicator
+                        # Send typing action
                         client.post(f"{self.base_url}/sendChatAction", json={
                             "chat_id": chat_id,
                             "action": "typing"

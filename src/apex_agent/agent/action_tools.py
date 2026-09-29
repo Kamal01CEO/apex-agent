@@ -1,4 +1,4 @@
-"""Action Tools for Full Autonomous Execution with Live Gmail Dispatch & Calendar Management."""
+"""Action Tools for Full Autonomous Execution: Memory, Calendar, Gmail, PaddleOCR, and PPT Master."""
 
 import json
 import uuid
@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from apex_agent.channels.email_bridge import LiveGmailBridge
+from apex_agent.channels.ppt_generator import PresentationGenerator
 from apex_agent.config import DATA_DIR, MEMORY_MD_PATH
 from apex_agent.intelligence.conflicts import ConflictDetector
 from apex_agent.intelligence.entities import EntityGraphEngine
+from apex_agent.intelligence.ocr_contracts import ContractInvoiceOCRScanner
 from apex_agent.memory.chunker import TextChunker
 from apex_agent.memory.embedder import Embedder
 from apex_agent.memory.index import SQLiteMemoryIndex
@@ -27,6 +29,8 @@ class ActionTools:
         self.conflict_detector = ConflictDetector()
         self.chunker = TextChunker(chunk_size=350, overlap=60)
         self.gmail = LiveGmailBridge()
+        self.ocr_scanner = ContractInvoiceOCRScanner()
+        self.ppt_gen = PresentationGenerator()
 
         # Storage paths
         self.drafts_dir = DATA_DIR / "drafts"
@@ -34,6 +38,8 @@ class ActionTools:
         self.pipeline_file = DATA_DIR / "pipeline.json"
         self.calendar_file = DATA_DIR / "calendar.json"
         self.tasks_file = DATA_DIR / "scheduled_tasks.json"
+        self.ppt_dir = DATA_DIR / "presentations"
+        self.ppt_dir.mkdir(parents=True, exist_ok=True)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """OpenAI-compatible tool definitions."""
@@ -43,11 +49,35 @@ class ActionTools:
                 "function": {
                     "name": "check_inbox_replies",
                     "description": "Checks the authenticated Gmail inbox for recent unread or important emails.",
+                    "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "scan_contract_pdf",
+                    "description": "Scans any PDF invoice, contract, or agreement using PaddleOCR & PyMuPDF, extracts structured financials/terms, and indexes into memory.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "limit": {"type": "integer", "description": "Number of recent emails to fetch, default 5"}
-                        }
+                            "file_path": {"type": "string", "description": "Absolute or relative path to PDF document"}
+                        },
+                        "required": ["file_path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_powerpoint_presentation",
+                    "description": "Generates a professional PowerPoint presentation (.pptx) from any document, markdown note, or topic.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "topic_or_doc": {"type": "string", "description": "Topic summary or document text"},
+                            "filename": {"type": "string", "description": "Optional output .pptx filename"}
+                        },
+                        "required": ["topic_or_doc"]
                     }
                 }
             },
@@ -56,23 +86,15 @@ class ActionTools:
                 "function": {
                     "name": "calendar_cancel_meetings",
                     "description": "Cancels and clears scheduled meetings from the calendar.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "participant": {"type": "string", "description": "Optional specific participant to cancel with, or 'all'"}
-                        }
-                    }
+                    "parameters": {"type": "object", "properties": {"participant": {"type": "string"}}}
                 }
             },
             {
                 "type": "function",
                 "function": {
                     "name": "calendar_list_meetings",
-                    "description": "Lists all currently scheduled meetings and calendar events.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {}
-                    }
+                    "description": "Lists all currently scheduled meetings.",
+                    "parameters": {"type": "object", "properties": {}}
                 }
             },
             {
@@ -83,10 +105,10 @@ class ActionTools:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string", "description": "Meeting title"},
-                            "participant": {"type": "string", "description": "Participant name or email"},
-                            "date_time": {"type": "string", "description": "Date and time string (e.g. 2026-09-23 15:00)"},
-                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 30"}
+                            "title": {"type": "string"},
+                            "participant": {"type": "string"},
+                            "date_time": {"type": "string"},
+                            "duration_minutes": {"type": "integer"}
                         },
                         "required": ["title", "participant", "date_time"]
                     }
@@ -99,9 +121,7 @@ class ActionTools:
                     "description": "Searches multi-modal personal memory (WhatsApp, emails, PDFs, notes) with hybrid retrieval.",
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "The search term or question to search memory for"}
-                        },
+                        "properties": {"query": {"type": "string"}},
                         "required": ["query"]
                     }
                 }
@@ -114,10 +134,10 @@ class ActionTools:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "prospect_name": {"type": "string", "description": "Name of the target executive"},
-                            "company": {"type": "string", "description": "Company name"},
-                            "email": {"type": "string", "description": "Target email address"},
-                            "pain_point": {"type": "string", "description": "Specific business problem to address"}
+                            "prospect_name": {"type": "string"},
+                            "company": {"type": "string"},
+                            "email": {"type": "string"},
+                            "pain_point": {"type": "string"}
                         },
                         "required": ["prospect_name", "company", "email"]
                     }
@@ -127,13 +147,13 @@ class ActionTools:
                 "type": "function",
                 "function": {
                     "name": "schedule_followup_cron",
-                    "description": "Registers a scheduled cron watchdog to monitor email replies and trigger autonomous follow-ups if unanswered.",
+                    "description": "Registers a scheduled cron watchdog to monitor email replies.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "lead_name": {"type": "string", "description": "Lead or prospect name"},
-                            "email": {"type": "string", "description": "Prospect email"},
-                            "days_delay": {"type": "integer", "description": "Days to wait before follow-up"}
+                            "lead_name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "days_delay": {"type": "integer"}
                         },
                         "required": ["lead_name", "email"]
                     }
@@ -143,14 +163,8 @@ class ActionTools:
                 "type": "function",
                 "function": {
                     "name": "analyze_and_improve_outreach",
-                    "description": "Analyzes an unreplied email, identifies failure causes, and crafts an improved follow-up.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "lead_name": {"type": "string", "description": "Name of the lead"}
-                        },
-                        "required": ["lead_name"]
-                    }
+                    "description": "Analyzes an unreplied email and drafts an improved follow-up.",
+                    "parameters": {"type": "object", "properties": {"lead_name": {"type": "string"}}, "required": ["lead_name"]}
                 }
             },
             {
@@ -161,7 +175,7 @@ class ActionTools:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "source_type": {"type": "string", "enum": ["whatsapp", "email", "note", "calendar"]},
+                            "source_type": {"type": "string"},
                             "sender": {"type": "string"},
                             "content": {"type": "string"}
                         },
@@ -174,13 +188,7 @@ class ActionTools:
                 "function": {
                     "name": "scrape_web_leads",
                     "description": "Discovers verified prospective enterprise leads matching ICP criteria.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "industry": {"type": "string", "description": "Target vertical"}
-                        },
-                        "required": ["industry"]
-                    }
+                    "parameters": {"type": "object", "properties": {"industry": {"type": "string"}}, "required": ["industry"]}
                 }
             }
         ]
@@ -188,7 +196,28 @@ class ActionTools:
     def execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         """Executes a tool call and returns a structured outcome."""
         try:
-            if name == "check_inbox_replies":
+            if name == "scan_contract_pdf":
+                fpath = Path(args.get("file_path", ""))
+                res = self.ocr_scanner.scan_document(fpath)
+                if res.get("status") == "error":
+                    return f"OCR Scan Error: {res.get('error')}"
+
+                # Auto-index into SQLite memory
+                meta = res.get("structured_metadata", {})
+                self.execute_tool("auto_save_memory", {
+                    "source_type": "note",
+                    "sender": meta.get("document_name", "Document"),
+                    "content": f"Structured Contract/Invoice: {meta.get('document_name')}\nType: {meta.get('detected_type')}\nPayment Terms: {meta.get('payment_terms')}\nDeal Value: {meta.get('deal_value')}\n\n{res.get('text')[:600]}"
+                })
+                return f"✔ Document '{meta.get('document_name')}' successfully scanned via PaddleOCR & indexed into memory.\nStructured Metadata: Type: {meta.get('detected_type')} | Payment Terms: {meta.get('payment_terms')} | Value: {meta.get('deal_value')}"
+
+            elif name == "create_powerpoint_presentation":
+                content = args.get("topic_or_doc", "Apex Arc Global Executive Briefing")
+                fname = args.get("filename")
+                out_path = self.ppt_gen.generate_presentation(content, output_filename=fname)
+                return f"✔ Professional PowerPoint Presentation generated: {out_path.name} saved at data/presentations/{out_path.name}"
+
+            elif name == "check_inbox_replies":
                 limit = args.get("limit", 5)
                 replies = self.gmail.fetch_recent_replies(limit=limit)
                 if not replies:
@@ -202,12 +231,10 @@ class ActionTools:
                 part = args.get("participant", "all")
                 if not self.calendar_file.exists():
                     return "No scheduled meetings found on your calendar."
-
                 try:
                     cal = json.loads(self.calendar_file.read_text(encoding="utf-8"))
                 except Exception:
                     cal = {}
-
                 if not cal:
                     return "Calendar is already empty."
 

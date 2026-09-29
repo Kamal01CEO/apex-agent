@@ -1,0 +1,46 @@
+{
+  "leads": {
+    "Acme Corp": {
+      "company": "Acme Corp",
+      "stage": "proposal",
+      "deal_value": "$45,000 + $6,000/mo retainer",
+      "notes": "Negotiating payment terms (Net 15 vs Net 30)",
+      "updated_at": "2026-09-19T11:12:07.828004"
+    },
+    "NexFlow AI": {
+      "company": "NexFlow AI",
+      "stage": "researched",
+      "deal_value": "$35,000+",
+      "notes": "Executive: Arjun Mehta (arjun@nexflow.ai) | Pain: Integration chaos between internal tools and legacy databases",
+      "updated_at": "2026-09-19T11:24:05.268565"
+    },
+    "OmniLogix Global": {
+      "company": "OmniLogix Global",
+      "stage": "researched",
+      "deal_value": "$35,000+",
+      "notes": "Executive: Elena Rostova (elena.r@omnilogix.com) | Pain: Manual invoice and customs document classification latency",
+      "updated_at": "2026-09-19T11:24:05.268781"
+    },
+    "EduPrime Cloud": {
+      "company": "EduPrime Cloud",
+      "stage": "researched",
+      "deal_value": "$35,000+",
+      "notes": "Executive: Vikram Sethi (v.sethi@eduprime.in) | Pain: Student doubt-clearing pipeline bottlenecks during exam peaks",
+      "updated_at": "2026-09-19T11:24:05.269010"
+    },
+    "Databricks": {
+      "company": "Databricks",
+      "stage": "contacted",
+      "deal_value": "$50,000 deployment",
+      "notes": "Cold outreach sent to Ali Ghodsi (ali@databricks.com)",
+      "updated_at": "2026-09-19T11:25:34.791192"
+    },
+    "": {
+      "company": "",
+      "stage": "contacted",
+      "deal_value": "$50,000 deployment",
+      "notes": "Cold outreach sent to Client (Kamalrai162002@gmail.com) via Gmail",
+      "updated_at": "2026-09-19T12:09:19.205473"
+    }
+  }
+}

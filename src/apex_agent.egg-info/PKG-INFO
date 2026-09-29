@@ -1,0 +1,42 @@
+Metadata-Version: 2.4
+Name: apex-agent
+Version: 0.1.0
+Summary: Autonomous Personal Memory Agent for Founders and Knowledge Workers
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.20.0
+Requires-Dist: pdfplumber>=0.10.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: apscheduler>=3.10.4
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: pydantic>=2.6.0
+Requires-Dist: sentence-transformers>=2.5.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: lancedb>=0.6.0
+Requires-Dist: pyarrow>=15.0.0
+Requires-Dist: watchdog>=4.0.0
+Provides-Extra: vector
+Requires-Dist: qdrant-client>=1.9.0; extra == "vector"
+Requires-Dist: lancedb>=0.10.0; extra == "vector"
+Requires-Dist: pyarrow>=16.0.0; extra == "vector"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+Requires-Dist: qdrant-client>=1.9.0; extra == "dev"
+Requires-Dist: lancedb>=0.10.0; extra == "dev"
+Requires-Dist: pyarrow>=16.0.0; extra == "dev"
+
+# Apex Agent ⚡
+
+> Autonomous Personal Searchable Memory Agent for Solo Founders & Power Users.
+> Built for the "AI for Everyday Life - The Memory Agent" Hackathon.
+
+## Core Capabilities
+1. **Cross-Data Ingestion**: Seamless ingestion across WhatsApp chats, PDFs, .eml emails, and Markdown notes.
+2. **Context & Relationships**: Entity graph mapping People, Events, Organizations, and Documents.
+3. **Conflict Detection**: Detects contradicting sources and highlights disagreements without guessing.
+4. **Source Attribution**: Strict provenance tracking on every recalled memory chunk.
+5. **Anti-Hallucination**: Grounded retrieval + strict context fencing + uncertainty scoring.
+6. **Autonomous Operations (Bonus)**: Proactive cron-based morning briefings and pipeline watchdogs over Telegram.

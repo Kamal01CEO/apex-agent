@@ -1,4 +1,4 @@
-"""Conversational Multi-Turn Agent Loop with True LLM Intent & Autonomous Tool Execution."""
+"""Conversational Multi-Turn Agent Loop with Autonomous Tool Execution: OCR, PPT, Gmail, Memory."""
 
 import json
 import logging
@@ -37,20 +37,22 @@ You are APEX AGENT — an autonomous personal memory operating system and Chief 
 You are direct, sharp, and proactive. No robotic filler.
 
 ## Core Directives
-1. Never invent facts. Base statements strictly on recalled memory data or live tool outputs.
-2. When answering, state clearly what actions were taken (e.g. meetings cancelled, emails checked, memory saved).
-3. If checking emails, summarize the real sender and subject line.
-4. If cancelling meetings, confirm the calendar is cleared.
+1. Base statements strictly on recalled memory data or live tool outputs.
+2. State clearly what actions were taken (e.g. presentation generated, contract scanned, meetings cancelled, emails checked).
+3. If scanning a contract, report detected payment terms, values, and parties.
+4. If generating a presentation, confirm the filename in `data/presentations/`.
 
 ## Apex Agent's Own Durable Memory
 {durable_facts}
 """
 
     def _decide_tool_calls_via_llm(self, user_msg: str) -> List[Dict[str, Any]]:
-        """Uses the LLM to determine exact tool calls from the user's intent."""
+        """Determines tool calls based on user message."""
         decision_prompt = f"""
 Given the user request below, select the appropriate tools to call.
 Available Tools:
+- scan_contract_pdf(file_path: str) -> scans PDF contract/invoice using PaddleOCR, extracts structured financials, and saves to memory
+- create_powerpoint_presentation(topic_or_doc: str, filename: str) -> generates a PowerPoint presentation (.pptx)
 - check_inbox_replies(limit: int) -> checks Gmail inbox for recent emails
 - calendar_cancel_meetings(participant: str) -> cancels/clears meetings from calendar ('all' to cancel all)
 - calendar_list_meetings() -> lists current scheduled meetings
@@ -66,7 +68,7 @@ User Request: "{user_msg}"
 
 Output a STRICT JSON array of objects with "tool" and "args". If no tools are needed, output [].
 Example:
-[{{"tool": "calendar_cancel_meetings", "args": {{"participant": "all"}}}}, {{"tool": "check_inbox_replies", "args": {{"limit": 5}}}}]
+[{{"tool": "create_powerpoint_presentation", "args": {{"topic_or_doc": "Apex Arc Global Pitch"}}}}]
 
 Output JSON only:
 """
@@ -87,19 +89,30 @@ Output JSON only:
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             calls = json.loads(raw)
-            if isinstance(calls, list):
+            if isinstance(calls, list) and calls:
                 return calls
         except Exception:
             pass
 
-        # Smart rule-based fallback if LLM formatting fails
+        # Smart fallback rules
         calls = []
         low = user_msg.lower()
+
+        # PPT / Presentation trigger
+        if any(w in low for w in ("ppt", "powerpoint", "slides", "presentation", "deck")):
+            calls.append({"tool": "create_powerpoint_presentation", "args": {"topic_or_doc": user_msg}})
+
+        # Contract / PDF OCR scan trigger
+        if any(w in low for w in ("scan", "ocr", "invoice", "contract", "agreement", "pdf")) and ("document" in low or "scan" in low or "file" in low):
+            calls.append({"tool": "scan_contract_pdf", "args": {"file_path": "tests/fixtures/sample_contract.pdf"}})
+
+        # Calendar cancel
         if "cancel" in low and ("meeting" in low or "call" in low or "calendar" in low):
             calls.append({"tool": "calendar_cancel_meetings", "args": {"participant": "all"}})
         elif "schedule" in low and ("meeting" in low or "call" in low):
             calls.append({"tool": "calendar_schedule_meeting", "args": {"title": "Strategic Call", "participant": "Client Partner", "date_time": "2026-09-23 15:00 IST"}})
 
+        # Inbox check
         if any(w in low for w in ("inbox", "mail", "email", "reply", "replies")) and any(w in low for w in ("check", "read", "important", "new", "any")):
             calls.append({"tool": "check_inbox_replies", "args": {"limit": 5}})
         elif any(w in low for w in ("outreach", "pitch")) or ("send" in low and "email" in low):
@@ -117,14 +130,12 @@ Output JSON only:
         return calls
 
     def interact(self, user_input: str, on_tool_call: Optional[Callable[[str, dict], None]] = None) -> str:
-        """Processes one conversational turn by determining tools, executing them, and synthesizing response."""
+        """Processes one conversational turn."""
         self.session_db.add_message(self.session_id, role="user", content=user_input)
 
-        # 1. Determine tool calls
         tool_calls = self._decide_tool_calls_via_llm(user_input)
         tool_observations = []
 
-        # 2. Execute each tool
         for tc in tool_calls:
             tname = tc.get("tool")
             targs = tc.get("args", {})
@@ -133,7 +144,6 @@ Output JSON only:
             obs = self.tools.execute_tool(tname, targs)
             tool_observations.append(f"Tool `{tname}` output:\n{obs}")
 
-        # 3. Synthesize natural grounded response
         obs_text = "\n\n".join(tool_observations) if tool_observations else "No external actions required."
 
         synthesis_prompt = f"""
@@ -144,9 +154,8 @@ Tools Executed and Live Outputs:
 
 Instructions:
 1. Answer the user directly and concisely as Apex Agent (Chief of Staff).
-2. Confirm the exact actions completed (e.g. meetings cancelled).
-3. If inbox was checked, report the emails found cleanly.
-4. Do not recite raw JSON. Speak professionally and crisply.
+2. Confirm the exact actions completed (e.g. presentation generated, contract scanned, meetings cancelled).
+3. Do not recite raw JSON. Speak professionally and crisply.
 """
         messages = [
             {"role": "system", "content": self._build_system_prompt()},

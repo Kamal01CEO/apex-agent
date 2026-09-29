@@ -11,10 +11,15 @@ from apex_agent.models import Chunk, Entity, Relationship
 
 
 class EntityGraphEngine:
-    """Extracts entities and relationships from chunks and builds an interconnected knowledge graph."""
+    """Extracts entities and relationships from chunks and builds an interconnected knowledge graph.
+    
+    NOTE: Entity extraction is disabled by default (runs on-demand only) as it's LLM-expensive.
+    Enable with extract_on_chunk=True in pipeline.
+    """
 
-    def __init__(self, db_path=DB_PATH):
+    def __init__(self, db_path=DB_PATH, auto_extract: bool = False):
         self.db_path = str(db_path)
+        self.auto_extract = auto_extract  # Disabled by default to save LLM costs
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

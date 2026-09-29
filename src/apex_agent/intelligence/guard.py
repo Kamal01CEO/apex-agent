@@ -2,6 +2,7 @@
 
 from typing import List, Optional
 from apex_agent.intelligence.conflicts import ConflictDetector
+from apex_agent.intelligence.cache import SemanticCache
 from apex_agent.models import ConfidenceLevel, Conflict, SearchResult
 
 
@@ -10,8 +11,9 @@ class AntiHallucinationGuard:
     Implements Hermes context fencing (<memory-context>) and strict refusal protocol.
     """
 
-    def __init__(self):
+    def __init__(self, enable_cache: bool = True):
         self.conflict_detector = ConflictDetector()
+        self.cache = SemanticCache() if enable_cache else None
 
     def format_fenced_context(self, results: List[SearchResult]) -> str:
         """Fences memory chunks to supply grounded context."""
@@ -49,6 +51,13 @@ class AntiHallucinationGuard:
 
     def synthesize_answer(self, query: str, results: List[SearchResult], llm_client) -> str:
         """Synthesizes the final verified response or executes the refusal protocol."""
+        # Check semantic cache first
+        cache_key = f"query:{query}"
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached.get("answer", "")
+
         confidence = self.evaluate_grounding(results)
 
         # 1. Refusal Protocol if no match or negative scores
@@ -108,5 +117,9 @@ INSTRUCTIONS:
                 )
             banner += "---\n\n"
             answer = banner + answer
+
+        # Cache the answer
+        if self.cache:
+            self.cache.set(cache_key, {"answer": answer, "confidence": confidence.value})
 
         return answer

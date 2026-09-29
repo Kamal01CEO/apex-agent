@@ -1,122 +1,75 @@
-"""Hybrid Search Engine combining FTS5 BM25 and Vector ANN search.
-
-Combines approximate nearest neighbor (ANN) vector search via Qdrant/LanceDB
-with SQLite FTS5 full-text search for optimal retrieval quality.
-"""
+"""Hybrid Search Engine combining FTS5 BM25 and Vector ANN Search."""
 
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Set
-from apex_agent.config import DATA_DIR
+from typing import Dict, List, Optional
 from apex_agent.memory.embedder import Embedder
 from apex_agent.memory.index import SQLiteMemoryIndex
-from apex_agent.memory.vector_store import VectorStore, create_vector_store, VectorMatch
+from apex_agent.memory.vector_store import LanceDBVectorStore
 from apex_agent.models import Chunk, ConfidenceLevel, SearchResult, SourceType
+from apex_agent.config import DATA_DIR, DB_PATH
+from pathlib import Path
 
 logger = logging.getLogger("apex_agent.search")
 
 
 class HybridSearchEngine:
-    """Executes hybrid search combining vector ANN + BM25 keyword ranking.
-    
-    Architecture:
-    1. Vector Search (fast ANN via Qdrant/LanceDB) - 70% weight
-    2. Keyword Search (BM25 via SQLite FTS5) - 30% weight
-    3. Combined scoring with configurable weighting
-    """
-    
-    def __init__(
-        self,
-        index: Optional[SQLiteMemoryIndex] = None,
-        vector_store: Optional[VectorStore] = None,
-        vector_backend: str = "auto",
-        vector_db_path: Optional[Path] = None,
-    ):
-        """Initialize hybrid search engine.
-        
-        Args:
-            index: SQLite memory index for BM25 and chunks
-            vector_store: Pre-configured vector store (optional)
-            vector_backend: "qdrant", "lancedb", "memory", or "auto"
-            vector_db_path: Path for vector database storage
-        """
+    """Executes 70% vector ANN + 30% BM25 hybrid ranking over multi-modal chunks."""
+
+    def __init__(self, index: Optional[SQLiteMemoryIndex] = None, use_ann: bool = True):
         self.index = index or SQLiteMemoryIndex()
+        self.use_ann = use_ann
+        self._vector_store = None
         
-        # Initialize vector store
-        if vector_store:
-            self.vector_store = vector_store
-        else:
-            vector_path = vector_db_path or (DATA_DIR / "vectors")
-            vector_path.mkdir(parents=True, exist_ok=True)
-            self.vector_store = create_vector_store(
-                backend=vector_backend,
-                db_path=vector_path,
-                collection_name="apex_chunks"
-            )
+        if self.use_ann:
+            try:
+                vector_db_path = DATA_DIR / "vectors"
+                self._vector_store = LanceDBVectorStore(db_path=vector_db_path)
+                logger.info("Initialized LanceDB vector store at %s", vector_db_path)
+            except Exception as e:
+                logger.warning("Failed to initialize vector store, using fallback: %s", e)
+                self._vector_store = None
+
+    def ensure_vectors_indexed(self):
+        """Sync existing chunks to vector store if not already indexed."""
+        if not self._vector_store:
+            return
         
-        # Sync existing chunks to vector store on first init
-        self._sync_chunks_to_vector_store()
-    
-    def _sync_chunks_to_vector_store(self):
-        """Load existing chunks from SQLite into vector store."""
-        try:
-            chunks = self.index.get_all_chunks(limit=1000)
-            
-            if not chunks:
-                logger.info("No existing chunks to sync to vector store")
-                return
-            
-            # Check if vector store is empty
-            if self.vector_store.count() > 0:
-                logger.info(f"Vector store already has {self.vector_store.count()} vectors, skipping sync")
-                return
-            
-            # Batch upsert chunks with embeddings
-            items_to_upsert = []
-            for chunk in chunks:
-                if chunk.embedding:
-                    items_to_upsert.append((
-                        chunk.id,
-                        chunk.embedding,
-                        {
-                            "event_id": chunk.event_id,
-                            "source_type": chunk.source_type.value,
-                            "source_ref": chunk.source_ref,
-                            "content": chunk.content[:500],  # Store truncated content for display
-                            "timestamp": chunk.timestamp.isoformat(),
-                        }
-                    ))
-            
-            if items_to_upsert:
-                logger.info(f"Syncing {len(items_to_upsert)} chunks to vector store...")
-                self.vector_store.upsert_batch(items_to_upsert)
-                logger.info(f"Vector store now contains {self.vector_store.count()} vectors")
+        # Check if already indexed
+        if self._vector_store.count() > 0:
+            logger.debug("Vector store already has %d vectors", self._vector_store.count())
+            return
         
-        except Exception as e:
-            logger.warning(f"Failed to sync chunks to vector store: {e}")
-    
-    def index_chunk(self, chunk: Chunk):
-        """Index a new chunk in the vector store.
+        logger.info("Indexing existing chunks to vector store...")
+        chunks = self.index.get_all_chunks(limit=10000)
         
-        Call this after adding chunk to SQLite to keep vector store in sync.
-        """
-        if chunk.embedding:
-            self.vector_store.upsert(
-                chunk_id=chunk.id,
-                embedding=chunk.embedding,
-                payload={
-                    "event_id": chunk.event_id,
-                    "source_type": chunk.source_type.value,
-                    "source_ref": chunk.source_ref,
-                    "content": chunk.content[:500],
-                    "timestamp": chunk.timestamp.isoformat(),
-                }
-            )
-    
-    def remove_chunk(self, chunk_id: str):
-        """Remove a chunk from the vector store."""
-        self.vector_store.delete(chunk_id)
-    
+        if not chunks:
+            return
+        
+        # Batch embed and add
+        batch_size = 50
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            
+            # Prepare data for vector store
+            vec_chunks = []
+            for c in batch:
+                if c.embedding:
+                    vec_chunks.append({
+                        "id": c.id,
+                        "content": c.content,
+                        "source_ref": c.source_ref,
+                        "source_type": c.source_type.value,
+                        "timestamp": c.timestamp.isoformat() if c.timestamp else "",
+                        "embedding": c.embedding,
+                    })
+            
+            if vec_chunks:
+                success = self._vector_store.add_chunks(vec_chunks)
+                if success:
+                    logger.debug("Indexed batch of %d chunks", len(vec_chunks))
+        
+        logger.info("Finished indexing %d chunks to vector store", len(chunks))
+
     def search(
         self,
         query: str,
@@ -124,162 +77,141 @@ class HybridSearchEngine:
         vector_weight: float = 0.70,
         bm25_weight: float = 0.30,
         source_type_filter: Optional[List[SourceType]] = None,
-        min_vector_score: float = 0.0,
     ) -> List[SearchResult]:
-        """Execute hybrid search combining vector ANN and BM25.
-        
-        Args:
-            query: Search query text
-            limit: Maximum results to return
-            vector_weight: Weight for vector similarity scores (default 0.70)
-            bm25_weight: Weight for BM25 keyword scores (default 0.30)
-            source_type_filter: Optional filter by source types
-            min_vector_score: Minimum vector similarity score threshold
-        
-        Returns:
-            List of SearchResult sorted by relevance
-        """
         if not query.strip():
             return []
-        
-        # 1. Keyword search (BM25) via FTS5
+
+        # Ensure vectors are indexed
+        if self._vector_store and self._vector_store.count() == 0:
+            self.ensure_vectors_indexed()
+
+        # 1. BM25 keyword search
         bm25_chunks = self.index.search_keyword(query, limit=limit * 3)
-        bm25_scores: Dict[str, float] = {}
-        
-        # Normalize BM25 ranks to 0.1-1.0 range (rank 1 = 1.0, last rank = 0.1)
+        bm25_map: Dict[str, float] = {}
         total_bm25 = len(bm25_chunks)
         for rank, chunk in enumerate(bm25_chunks):
             score = 1.0 - (rank / max(1, total_bm25))
-            bm25_scores[chunk.id] = max(0.1, score)
+            bm25_map[chunk.id] = max(0.1, score)
+
+        # 2. Vector search (ANN via LanceDB or fallback)
+        query_vec = Embedder.embed_text_cached(query)
         
-        # 2. Vector search (ANN) via Qdrant/LanceDB
-        query_vector = Embedder.embed_text(query)
-        vector_results = self.vector_store.search(
-            query_vector=query_vector,
-            limit=limit * 4,  # Get more candidates for re-ranking
-            min_score=min_vector_score
-        )
-        
-        # Build lookup from vector results
-        vector_scores: Dict[str, float] = {}
-        for match in vector_results:
-            vector_scores[match.chunk_id] = match.score
-        
-        # 3. Gather all candidate chunk IDs
-        candidate_ids: Set[str] = set(bm25_scores.keys()) | set(vector_scores.keys())
-        
-        # 4. Fetch full chunks for candidates
+        vector_map: Dict[str, float] = {}
         chunk_pool: Dict[str, Chunk] = {}
         
-        # First, use chunks from BM25 results
-        for chunk in bm25_chunks:
-            chunk_pool[chunk.id] = chunk
+        for c in bm25_chunks:
+            chunk_pool[c.id] = c
+
+        if self._vector_store and self.use_ann:
+            # Fast ANN search
+            try:
+                ann_results = self._vector_store.search(
+                    query_embedding=list(query_vec),
+                    limit=limit * 2
+                )
+                
+                # Get full chunk objects for ANN results
+                for idx, match in enumerate(ann_results):
+                    chunk_id = match.get("id")
+                    if chunk_id:
+                        # Fetch chunk from SQLite
+                        chunks = self.index.search_keyword(chunk_id, limit=1)
+                        if chunks:
+                            chunk_pool[chunk_id] = chunks[0]
+                        # Distance to similarity ( LanceDB returns distance, convert)
+                        distance = match.get("distance", 0.0)
+                        similarity = max(0.0, 1.0 - (distance / 2.0))  # Normalize
+                        vector_map[chunk_id] = similarity
+            except Exception as e:
+                logger.warning("ANN search failed, falling back to brute-force: %s", e)
+                self._vector_store = None
         
-        # For vector matches not in BM25, fetch from DB using efficient ID lookup
-        missing_ids = [cid for cid in vector_scores if cid not in chunk_pool]
-        if missing_ids:
-            fetched_chunks = self.index.get_chunks_by_ids(missing_ids)
-            for chunk in fetched_chunks:
-                chunk_pool[chunk.id] = chunk
-        
-        # 5. Combine scores with RRN-style fusion
+        # Fallback: brute-force vector search
+        if not self._vector_store or not vector_map:
+            all_chunks = self.index.get_all_chunks(limit=300)
+            for c in all_chunks:
+                if c.embedding:
+                    sim = Embedder.cosine_similarity(query_vec, c.embedding)
+                    vector_map[c.id] = sim
+                    chunk_pool[c.id] = c
+
+        # 3. Combine scores
         combined_results: List[SearchResult] = []
-        
-        for cid in candidate_ids:
-            chunk = chunk_pool.get(cid)
-            if not chunk:
-                continue
-            
-            # Apply source type filter
+
+        for cid, chunk in chunk_pool.items():
             if source_type_filter and chunk.source_type not in source_type_filter:
                 continue
-            
-            v_score = vector_scores.get(cid, 0.0)
-            b_score = bm25_scores.get(cid, 0.0)
-            
-            # Combined weighted score
+
+            v_score = vector_map.get(cid, 0.0)
+            b_score = bm25_map.get(cid, 0.0)
+
             final_score = (vector_weight * v_score) + (bm25_weight * b_score)
-            
-            # Determine confidence level based on both signals
-            confidence = self._determine_confidence(v_score, b_score)
-            
+
+            # Determine confidence level
+            if b_score > 0.6 or (v_score > 0.85 and b_score > 0.2):
+                conf = ConfidenceLevel.EXACT_MATCH
+            elif v_score > 0.75 or (v_score > 0.65 and b_score > 0.3):
+                conf = ConfidenceLevel.SEMANTIC_MATCH
+            elif v_score > 0.50 or b_score > 0.2:
+                conf = ConfidenceLevel.WEAK_MATCH
+            else:
+                conf = ConfidenceLevel.NO_MATCH
+
             combined_results.append(
                 SearchResult(
                     chunk=chunk,
                     relevance_score=final_score,
-                    confidence=confidence,
+                    confidence=conf,
                     bm25_score=b_score,
                     vector_score=v_score,
                 )
             )
-        
-        # 6. Sort by combined relevance score
+
         combined_results.sort(key=lambda r: r.relevance_score, reverse=True)
         return combined_results[:limit]
-    
-    def _determine_confidence(self, vector_score: float, bm25_score: float) -> ConfidenceLevel:
-        """Classify result confidence based on vector and BM25 scores."""
-        # Strong BM25 match or strong vector + decent BM25
-        if bm25_score > 0.6 or (vector_score > 0.85 and bm25_score > 0.2):
-            return ConfidenceLevel.EXACT_MATCH
+
+    def search_keywords_only(self, query: str, limit: int = 10) -> List[SearchResult]:
+        """BM25-only search for exact keyword matching."""
+        bm25_chunks = self.index.search_keyword(query, limit=limit)
         
-        # Good vector match or combined signals
-        elif vector_score > 0.75 or (vector_score > 0.65 and bm25_score > 0.3):
-            return ConfidenceLevel.SEMANTIC_MATCH
+        results = []
+        for rank, chunk in enumerate(bm25_chunks):
+            results.append(SearchResult(
+                chunk=chunk,
+                relevance_score=1.0 - (rank / max(1, len(bm25_chunks))),
+                confidence=ConfidenceLevel.EXACT_MATCH,
+                bm25_score=1.0,
+                vector_score=0.0,
+            ))
         
-        # Moderate match on either signal
-        elif vector_score > 0.50 or bm25_score > 0.2:
-            return ConfidenceLevel.WEAK_MATCH
-        
-        # Low confidence match
-        else:
-            return ConfidenceLevel.NO_MATCH
-    
-    def vector_only_search(
-        self,
-        query: str,
-        limit: int = 10,
-        min_score: float = 0.0,
-        source_type_filter: Optional[List[SourceType]] = None,
-    ) -> List[SearchResult]:
-        """Pure vector ANN search without BM25 component.
-        
-        Useful for semantic queries where keyword matching is less relevant.
-        """
-        if not query.strip():
+        return results
+
+    def search_semantic_only(self, query: str, limit: int = 10) -> List[SearchResult]:
+        """Pure semantic search using vector similarity only."""
+        if not self._vector_store:
+            logger.warning("Vector store not available for semantic-only search")
             return []
         
-        query_vector = Embedder.embed_text(query)
-        matches = self.vector_store.search(query_vector, limit=limit * 2, min_score=min_score)
+        query_vec = Embedder.embed_text_cached(query)
+        ann_results = self._vector_store.search(
+            query_embedding=list(query_vec),
+            limit=limit
+        )
         
-        # Fetch full chunks for matches using efficient ID lookup
-        match_ids = [m.chunk_id for m in matches]
-        chunks_map: Dict[str, Chunk] = {c.id: c for c in self.index.get_chunks_by_ids(match_ids)}
-        
-        results: List[SearchResult] = []
-        for match in matches:
-            chunk = chunks_map.get(match.chunk_id)
-            
-            if chunk:
-                if source_type_filter and chunk.source_type not in source_type_filter:
-                    continue
-                
-                confidence = self._determine_confidence(match.score, 0.0)
+        results = []
+        for match in ann_results:
+            chunk_id = match.get("id")
+            chunks = self.index.search_keyword(chunk_id, limit=1)
+            if chunks:
+                distance = match.get("distance", 0.0)
+                similarity = max(0.0, 1.0 - (distance / 2.0))
                 
                 results.append(SearchResult(
-                    chunk=chunk,
-                    relevance_score=match.score,
-                    confidence=confidence,
-                    vector_score=match.score,
+                    chunk=chunks[0],
+                    relevance_score=similarity,
+                    confidence=ConfidenceLevel.SEMANTIC_MATCH if similarity > 0.5 else ConfidenceLevel.WEAK_MATCH,
                     bm25_score=0.0,
+                    vector_score=similarity,
                 ))
         
-        return results[:limit]
-    
-    def get_stats(self) -> Dict:
-        """Return statistics about the search engine."""
-        return {
-            "vector_store_type": type(self.vector_store).__name__,
-            "vector_count": self.vector_store.count(),
-            "sqlite_chunks": len(self.index.get_all_chunks(limit=10000)),
-        }
+        return results
